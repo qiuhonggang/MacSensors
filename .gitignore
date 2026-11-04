@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+._*
+
+# 构建产物（由 build.sh / package.sh 生成，不进版本库）
+generated/
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+project.xcworkspace/xcuserdata/
+
+# 本地迁移/会话备份（可能含私人对话与配置，禁止提交）
+.dsh-migration-backup-*/
+*.session-backup
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved

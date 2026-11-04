@@ -1,0 +1,77 @@
+name: MacSensors
+options:
+  bundleIdPrefix: com.macsensors
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "1500"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SDKROOT: macosx
+    CLANG_ENABLE_MODULES: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+    # 本地开发：使用 ad-hoc 签名（"-"）。
+    # 关键：entitlements 只有在真正签名时才会被 codesign 嵌入二进制，
+    # 否则 pluginkit 不认 Widget、App Group 也不生效。
+    # 有开发者账号时改成 "Apple Development" 并填 DEVELOPMENT_TEAM。
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGNING_ALLOWED: YES
+
+targets:
+  MacSensorsApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: MacSensorsApp
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macsensors.app
+        PRODUCT_NAME: MacSensors
+        INFOPLIST_FILE: MacSensorsApp/Info.plist
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_ENTITLEMENTS: MacSensorsApp/MacSensors.entitlements
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+    # 主 App 保持非沙箱：IOKit 私有 API（SMC/HID）在非沙箱下实测可用。
+    # 与 Widget 的数据共享由 Shared/SensorStore.swift 的多路径显式文件保证，
+    # 不依赖 UserDefaults(suiteName:) 的沙箱隐式行为。
+    entitlements:
+      path: MacSensorsApp/MacSensors.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.application-groups:
+          - group.com.macsensors.shared
+    dependencies:
+      - target: MacSensorsWidgetExtension
+        embed: true
+        codeSign: true
+
+  MacSensorsWidgetExtension:
+    type: app-extension
+    platform: macOS
+    # 关键：Widget 只编译纯数据模型 + 存储，绝不编译 SensorReader.swift。
+    # 这样 Widget 二进制里完全没有 IOKit/私有 API 依赖，
+    # 沙箱内不可能因现场采样被拒或崩溃（编译期即杜绝）。
+    sources:
+      - path: MacSensorsWidget
+      - path: Shared
+        excludes:
+          - SensorReader.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.macsensors.app.widget
+        PRODUCT_NAME: MacSensorsWidgetExtension
+        INFOPLIST_FILE: MacSensorsWidget/Info.plist
+        CODE_SIGN_ENTITLEMENTS: MacSensorsWidget/MacSensorsWidget.entitlements
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks"
+    entitlements:
+      path: MacSensorsWidget/MacSensorsWidget.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - group.com.macsensors.shared
