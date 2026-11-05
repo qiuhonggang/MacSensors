@@ -7,7 +7,7 @@ import WidgetKit
 @MainActor
 final class SensorModel: ObservableObject {
     @Published var snapshot: SensorSnapshot = .empty
-    @Published var history: [Double] = []
+    @Published var history: [Double] = []       // 全通道最高温历史（用于趋势曲线）
     private var timer: Timer?
 
     init() {
@@ -22,7 +22,7 @@ final class SensorModel: ObservableObject {
             let snap = SensorReader.snapshot()
             await MainActor.run {
                 self.snapshot = snap
-                self.history.append(snap.socTempMax)
+                self.history.append(snap.overallMaxTemp)
                 if self.history.count > 40 { self.history.removeFirst() }
                 SensorStore.save(snap)
                 WidgetCenter.shared.reloadAllTimelines()
@@ -32,7 +32,8 @@ final class SensorModel: ObservableObject {
 
     var menuTitle: String {
         guard snapshot.available else { return "—" }
-        return String(format: "%.0f°", snapshot.socTempMax)
+        // 用全通道最高温；否则 CPU 已 74° 时菜单栏还显示 HID 的 59° 绿色
+        return String(format: "%.0f°", snapshot.overallMaxTemp)
     }
 }
 
@@ -189,27 +190,41 @@ struct MenuContentView: View {
             }
 
             if s.available {
-                // 主读数区：彩色大数字
-                HStack(alignment: .firstTextBaseline) {
-                    ColoredValue(value: s.socTempMax, unit: "°C", digits: 1,
-                                 level: s.overallLevel, size: 34)
-                    Text("芯片最高").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(String(format: "平均 %.1f°", s.socTempAvg))
-                            .font(.caption).monospacedDigit()
-                        Text(String(format: "最低 %.1f°", s.socTempMin))
-                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                // 主读数区：全通道真正的最高温（合并 SMC + HID 所有点位）
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        ColoredValue(value: s.overallMaxTemp, unit: "°C", digits: 1,
+                                     level: s.overallLevel, size: 34)
+                        Text("全机最高").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(String(format: "片上平均 %.1f°", s.socTempAvg))
+                                .font(.caption).monospacedDigit()
+                            Text(String(format: "片上最低 %.1f°", s.socTempMin))
+                                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    }
+                    if let h = s.hottestPoint {
+                        HStack(spacing: 5) {
+                            Image(systemName: "flame.fill").font(.caption2)
+                                .foregroundStyle(s.overallLevel.color)
+                            Text("最热点：\(h.label)").font(.caption2)
+                            Text(h.source).font(.caption2).foregroundStyle(.quaternary)
+                            Spacer()
+                            Text(String(format: "%.1f°", h.celsius))
+                                .font(.caption2.weight(.semibold)).monospacedDigit()
+                                .foregroundStyle(s.overallLevel.color)
+                        }
                     }
                 }
                 .padding(10)
                 .background(s.overallLevel.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
 
-                // 核心四宫格：芯片 / CPU / 风扇 / 功率
+                // 核心四宫格：分别标注通道，避免「芯片最高 < CPU」的歧义
                 HStack(spacing: 8) {
-                    MiniStat(icon: "cpu.fill", title: "芯片", value: s.socTempMax,
-                             unit: "°C", digits: 1, level: s.overallLevel)
-                    MiniStat(icon: "flame.fill", title: "CPU 核", value: s.cpuTempMax,
+                    MiniStat(icon: "cpu.fill", title: "片上(HID)", value: s.socTempMax,
+                             unit: "°C", digits: 1, level: TempLevel.of(s.socTempMax))
+                    MiniStat(icon: "flame.fill", title: "CPU(SMC)", value: s.cpuTempMax,
                              unit: "°C", digits: 1, level: TempLevel.of(s.cpuTempMax))
                     MiniStat(icon: "bolt.fill", title: "功率", value: s.powerWatt,
                              unit: "W", digits: 1, level: .normal)
@@ -365,10 +380,21 @@ struct DetailView: View {
                 }
 
                 HStack(spacing: 12) {
-                    BigStat(title: "芯片最高", value: s.socTempMax, unit: "°C", level: s.overallLevel)
-                    BigStat(title: "CPU 核心", value: s.cpuTempMax, unit: "°C", level: TempLevel.of(s.cpuTempMax))
+                    BigStat(title: "全机最高", value: s.overallMaxTemp, unit: "°C", level: s.overallLevel)
+                    BigStat(title: "片上(HID)", value: s.socTempMax, unit: "°C", level: TempLevel.of(s.socTempMax))
+                    BigStat(title: "CPU(SMC)", value: s.cpuTempMax, unit: "°C", level: TempLevel.of(s.cpuTempMax))
                     BigStat(title: "片上平均", value: s.socTempAvg, unit: "°C", level: TempLevel.of(s.socTempAvg))
-                    BigStat(title: "片上最低", value: s.socTempMin, unit: "°C", level: TempLevel.of(s.socTempMin))
+                }
+                if let h = s.hottestPoint {
+                    HStack(spacing: 5) {
+                        Image(systemName: "flame.fill").font(.caption)
+                            .foregroundStyle(s.overallLevel.color)
+                        Text("全机最热点：\(h.label)（\(h.source) · \(h.group)）")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("SMC 与 HID 为独立传感器通道，数值不共享")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
 
                 // 风扇区：改成仪表化的可视行

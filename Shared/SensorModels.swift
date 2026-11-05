@@ -109,11 +109,12 @@ struct FanStatus: Codable, Sendable, Equatable {
 /// 因此主 App 与 Widget Extension 都可安全编译。
 struct SensorSnapshot: Codable, Sendable, Equatable {
     var date: Date = Date()
-    var cpuTemp: Double = 0
-    var cpuTempMax: Double = 0
-    var socTempMax: Double = 0
-    var socTempAvg: Double = 0
+    var cpuTemp: Double = 0          // SMC Tp0C 性能核
+    var cpuTempMax: Double = 0       // SMC Tp0P 性能核最高
+    var socTempMax: Double = 0       // HID 63 点中的最大值（不含 SMC CPU/GPU 点位！）
+    var socTempAvg: Double = 0       // HID 63 点平均
     var socTempMin: Double = 0       // HID 全机最低
+    var overallMaxStored: Double = 0 // 采集时写入的全通道最高（历史字段，兼容用）
     var batteryTemp: Double = 0
     var fan0RPM: Double = 0
     var fan1RPM: Double = 0
@@ -139,12 +140,28 @@ struct SensorSnapshot: Codable, Sendable, Equatable {
         FanStatus(rpm: fan1RPM, target: fan1Target, maximum: fan1Max, minimum: fan1Min)
     }
 
-    /// 下拉面板顶部的主状态
-    var overallLevel: TempLevel { TempLevel.of(socTempMax) }
+    /// 全通道真正的最高温。
+    /// socTempMax 只是 HID 那 63 个点里的最大值，并不包含 SMC 的 CPU/GPU 点位；
+    /// 实测常见「CPU 74°C 但 socTempMax 仅 59°C」的情况。这里合并两路所有点位，
+    /// 让菜单栏数字、状态色阶、趋势曲线反映真实最热点。
+    /// 故意设为计算属性（不入库）：旧版快照 JSON 缺字段也能正常解码。
+    var overallMaxTemp: Double {
+        var m = max(socTempMax, cpuTempMax, cpuTemp)
+        for p in tempPoints where p.celsius > m { m = p.celsius }
+        return m
+    }
+
+    /// 最热的那个点位，用于在主读数下标注「热在哪、来自哪路传感器」
+    var hottestPoint: TempPoint? {
+        tempPoints.filter { $0.celsius > 0 }.max { $0.celsius < $1.celsius }
+    }
+
+    /// 主状态（菜单栏 / 徽章 / 色阶）一律基于全通道最高温
+    var overallLevel: TempLevel { TempLevel.of(overallMaxTemp) }
 
     /// 按分组整理温度点，组内按温度降序
     var groupedTemps: [(group: String, points: [TempPoint])] {
-        let order = ["芯片", "CPU", "GPU", "片上热点", "内存", "电池", "机身", "电源", "其他"]
+        let order = ["芯片", "CPU", "GPU", "片上测温点(HID)", "内存", "电池", "机身", "电源", "其他"]
         var buckets: [String: [TempPoint]] = [:]
         for p in tempPoints where p.celsius > 0 {
             buckets[p.group, default: []].append(p)
@@ -163,6 +180,7 @@ struct SensorSnapshot: Codable, Sendable, Equatable {
         s.socTempMax = 54.2
         s.socTempAvg = 49.8
         s.socTempMin = 41.3
+        s.cpuTemp = 58.0
         s.cpuTempMax = 63.1
         s.fan0RPM = 2400; s.fan1RPM = 2600
         s.fan0Max = 5500; s.fan1Max = 5500
@@ -173,7 +191,7 @@ struct SensorSnapshot: Codable, Sendable, Equatable {
         s.tempPoints = [
             TempPoint(key: "Tp0P", label: "性能核最高", celsius: 63.1, group: "CPU", source: "SMC"),
             TempPoint(key: "Tg0P", label: "GPU 最高", celsius: 55.4, group: "GPU", source: "SMC"),
-            TempPoint(key: "HID", label: "片上热点", celsius: 54.2, group: "片上热点", source: "HID")
+            TempPoint(key: "HID", label: "片上热点 tdie4", celsius: 54.2, group: "片上测温点(HID)", source: "HID")
         ]
         return s
     }

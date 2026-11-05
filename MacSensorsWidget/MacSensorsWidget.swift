@@ -53,14 +53,14 @@ struct SmallWidget: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: level.symbol).foregroundStyle(level.color)
-                Text("芯片温度").font(.caption).foregroundStyle(.secondary)
+                Text("全机最高").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(level.title).font(.caption2.weight(.semibold))
                     .foregroundStyle(level.color)
             }
             Spacer(minLength: 0)
             HStack(alignment: .firstTextBaseline, spacing: 2) {
-                Text(String(format: "%.1f", s.socTempMax))
+                Text(String(format: "%.1f", s.overallMaxTemp))
                     .font(.system(size: 38, weight: .semibold, design: .rounded))
                     .monospacedDigit().minimumScaleFactor(0.7)
                     .foregroundStyle(level.color)
@@ -97,9 +97,9 @@ struct MediumWidget: View {
                 Text(s.date, style: .time).font(.caption2).foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                Tile(icon: "cpu.fill", title: "芯片", value: s.socTempMax, unit: "°C",
+                Tile(icon: "cpu.fill", title: "全机最高", value: s.overallMaxTemp, unit: "°C",
                      level: s.overallLevel)
-                Tile(icon: "flame.fill", title: "CPU", value: s.cpuTempMax, unit: "°C",
+                Tile(icon: "flame.fill", title: "CPU(SMC)", value: s.cpuTempMax, unit: "°C",
                      level: TempLevel.of(s.cpuTempMax))
                 Tile(icon: "fan.fill", title: "风扇0", value: s.fan0RPM, unit: "RPM",
                      level: s.fan0.level, digits: 0)
@@ -140,12 +140,12 @@ struct LargeWidget: View {
                 Text(s.date, style: .time).font(.caption2).foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
-                Tile(icon: "cpu.fill", title: "芯片最高", value: s.socTempMax, unit: "°C",
+                Tile(icon: "cpu.fill", title: "全机最高", value: s.overallMaxTemp, unit: "°C",
                      level: s.overallLevel)
-                Tile(icon: "flame.fill", title: "CPU 核心", value: s.cpuTempMax, unit: "°C",
+                Tile(icon: "flame.fill", title: "CPU(SMC)", value: s.cpuTempMax, unit: "°C",
                      level: TempLevel.of(s.cpuTempMax))
-                Tile(icon: "thermometer", title: "平均", value: s.socTempAvg, unit: "°C",
-                     level: TempLevel.of(s.socTempAvg))
+                Tile(icon: "thermometer", title: "片上(HID)", value: s.socTempMax, unit: "°C",
+                     level: TempLevel.of(s.socTempMax))
             }
 
             // 风扇可视化

@@ -259,7 +259,7 @@ enum SensorReader {
                 for (i, t) in sorted.prefix(8).enumerated() {
                     points.append(TempPoint(key: "HID-\(i)", label: t.name,
                                             celsius: t.celsius,
-                                            group: "片上热点", source: "HID"))
+                                            group: "片上测温点(HID)", source: "HID"))
                 }
             }
         }
