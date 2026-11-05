@@ -2,7 +2,7 @@ import Foundation
 import IOKit
 import Darwin
 
-// 注意：SensorSnapshot 定义在 Shared/SensorModels.swift（纯数据、无 IOKit）。
+// 注意：SensorSnapshot / TempPoint 定义在 Shared/SensorModels.swift（纯数据、无 IOKit）。
 // 本文件（含 IOKit 私有 API）只应由主 App target 编译，Widget 不应包含它。
 
 // MARK: - SMC 通道
@@ -72,11 +72,69 @@ final class SMCSensor {
     }
 }
 
+// MARK: - SMC 温度 key 表
+
+/// 尽可能覆盖 Apple Silicon / Intel 常见 SMC 温度键。
+/// 不存在的 key 会返回 nil，自动跳过，不影响其它机型。
+/// (key, 显示名, 分组)
+private let smcTempKeys: [(String, String, String)] = [
+    // CPU / 核心
+    ("Tp0C", "CPU 性能核", "CPU"),
+    ("Tp0P", "CPU 性能核最高", "CPU"),
+    ("Tp1C", "CPU 能效核", "CPU"),
+    ("Tp1P", "CPU 能效核最高", "CPU"),
+    ("Tp2P", "CPU 核心 2", "CPU"),
+    ("Tp3P", "CPU 核心 3", "CPU"),
+    ("Tp4P", "CPU 核心 4", "CPU"),
+    ("Tp5P", "CPU 核心 5", "CPU"),
+    ("TC0C", "CPU 核心 0", "CPU"),
+    ("TC1C", "CPU 核心 1", "CPU"),
+    ("TC2C", "CPU 核心 2", "CPU"),
+    ("TC3C", "CPU 核心 3", "CPU"),
+    ("TC0P", "CPU 接近度", "CPU"),
+    ("TCAD", "CPU 二极管", "CPU"),
+    // GPU
+    ("Tg0P", "GPU 最高", "GPU"),
+    ("Tg0C", "GPU 核心", "GPU"),
+    ("Tg1P", "GPU 接近度", "GPU"),
+    ("TG0P", "GPU 接近度", "GPU"),
+    ("TG0D", "GPU 二极管", "GPU"),
+    // 片上 / SoC
+    ("Ts0P", "SoC 接近度 0", "芯片"),
+    ("Ts1P", "SoC 接近度 1", "芯片"),
+    ("Ts0S", "SoC 表面", "芯片"),
+    ("Tm0P", "内存控制器", "内存"),
+    ("Tm1P", "内存控制器 1", "内存"),
+    ("Tm2P", "内存控制器 2", "内存"),
+    ("Tm0S", "内存模块", "内存"),
+    ("TL0P", "显示引擎", "芯片"),
+    ("TI0P", "雷电控制器", "芯片"),
+    // 电池
+    ("TB0T", "电池温度 1", "电池"),
+    ("TB1T", "电池温度 2", "电池"),
+    ("TB2T", "电池温度 3", "电池"),
+    ("TB0V", "电池电压", "电源"),
+    ("B0AV", "电池电压", "电源"),
+    // 机身 / 外壳 / 环境
+    ("Ta0P", "环境传感器", "机身"),
+    ("Ta1P", "环境传感器 1", "机身"),
+    ("Ta0S", "机身表面", "机身"),
+    ("Th0P", "散热片", "机身"),
+    ("Th1P", "散热片 1", "机身"),
+    ("TW0P", "无线模块", "机身"),
+    ("Tl0P", "掌托", "机身"),
+    ("Ts0D", "机身表面", "机身"),
+    // 电源 / 充电
+    ("TP0P", "电源管理器", "电源"),
+    ("TP1P", "电源管理器 1", "电源"),
+    ("TPCD", "充电控制器", "电源"),
+    ("TTF0", "变压器", "电源"),
+    ("TCSA", "电源适配器", "电源")
+]
+
 // MARK: - HID 通道
 
 /// 通过 IOHID EventSystem 私有 API 读取 Apple Silicon PMU 片上测温点。
-/// 匹配 AppleVendor 页 (0xff00) 的 TemperatureSensor usage (0x05)，
-/// 读取 kIOHIDEventTypeTemperature (=15) 事件的浮点值。
 final class HIDTemperatureSensor {
     private typealias CreateFn = @convention(c) (CFAllocator?) -> Unmanaged<AnyObject>?
     private typealias SetMatchFn = @convention(c) (OpaquePointer, CFDictionary) -> Void
@@ -86,7 +144,7 @@ final class HIDTemperatureSensor {
     private typealias CopyPropFn = @convention(c) (UnsafeRawPointer, CFString) -> Unmanaged<AnyObject>?
 
     private let handle: UnsafeMutableRawPointer
-    /// 强持有 IOHIDEventSystemClient 对象本身：它一旦被 ARC 释放，
+    /// 强持有 IOHIDEventSystemClient 对象本身：一旦被 ARC 释放，
     /// 之后所有调用都会在 IOMIGMachPortGetPort 里空指针崩溃。
     private let clientObject: AnyObject
     private var client: UnsafeRawPointer {
@@ -95,6 +153,7 @@ final class HIDTemperatureSensor {
     private let services: CFArray
     private let copyEvent: CopyEventFn
     private let getFloat: GetFloatFn
+    private let copyProp: CopyPropFn?
 
     init?() {
         guard let h = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY) else { return nil }
@@ -110,6 +169,7 @@ final class HIDTemperatureSensor {
               let gf: GetFloatFn = sym("IOHIDEventGetFloatValue")
         else { return nil }
         copyEvent = ce; getFloat = gf
+        copyProp = sym("IOHIDServiceClientCopyProperty")
 
         guard let c = create(kCFAllocatorDefault)?.takeRetainedValue() else { return nil }
         clientObject = c
@@ -120,11 +180,7 @@ final class HIDTemperatureSensor {
         services = s
     }
 
-    // 注意：client / services / event 都是 IOHIDEventSystem 内部持有的对象，
-    // 我们只借用其指针（takeUnretainedValue），绝不能让 ARC 或手动 CFRelease 释放，
-    // 否则会在 IOHIDEventSystemClientTerminationCallback 里二次释放导致 EXC_BREAKPOINT。
-    // 因此这里故意不做额外 release，也不 dlclose（进程生命周期内保持有效）。
-
+    /// 返回每个 HID 测温服务的读数，并尽量带上系统的命名。
     func read() -> [(name: String, celsius: Double)] {
         let count = CFArrayGetCount(services)
         var result: [(String, Double)] = []
@@ -139,7 +195,15 @@ final class HIDTemperatureSensor {
                 let v = getFloat(evPtr, Int64((15 << 16) | Int64(f)))
                 if v > 1 && v < 130 && v > t { t = v }
             }
-            if t > 0 { result.append(("PMU", t)) }
+            guard t > 0 else { continue }
+
+            var label = "PMU \(i + 1)"
+            if let cp = copyProp,
+               let prop = cp(svc, "Product" as CFString)?.takeUnretainedValue() as? String,
+               !prop.isEmpty {
+                label = prop
+            }
+            result.append((label, t))
         }
         return result
     }
@@ -147,10 +211,10 @@ final class HIDTemperatureSensor {
 
 // MARK: - 聚合读取器
 
-/// 把 SMC + HID 两路数据合并成一份快照。
 enum SensorReader {
     static func snapshot() -> SensorSnapshot {
         var s = SensorSnapshot()
+        var points: [TempPoint] = []
 
         if let smc = SMCSensor() {
             s.smcKeyCount = Int(smc.uintBE("#KEY") ?? 0)
@@ -159,23 +223,48 @@ enum SensorReader {
             s.fan1RPM = smc.float("F1Ac") ?? 0
             s.fan0Target = smc.float("F0Tg") ?? 0
             s.fan1Target = smc.float("F1Tg") ?? 0
+            s.fan0Max = smc.float("F0Mx") ?? 5500
+            s.fan1Max = smc.float("F1Mx") ?? 5500
+            s.fan0Min = smc.float("F0Mn") ?? 0
+            s.fan1Min = smc.float("F1Mn") ?? 0
             s.cpuTemp = smc.float("Tp0C") ?? 0
             s.cpuTempMax = smc.float("Tp0P") ?? 0
             s.batteryTemp = smc.float("TB0T") ?? 0
             s.powerWatt = smc.float("PSTR") ?? 0
             s.available = s.fanCount > 0
+
+            // 遍历温度 key 表：存在的才收录，自动适配不同机型
+            for (key, label, group) in smcTempKeys {
+                if let v = smc.float(key), v > 1, v < 130 {
+                    points.append(TempPoint(key: key, label: label,
+                                            celsius: v, group: group, source: "SMC"))
+                }
+            }
         }
 
         if let hid = HIDTemperatureSensor() {
             let temps = hid.read()
             let values = temps.map(\.celsius)
             s.hidSensorCount = values.count
-            if let mx = values.max(), let sum = Optional(values.reduce(0, +)), !values.isEmpty {
-                s.socTempMax = mx
+            if !values.isEmpty {
+                let sum = values.reduce(0, +)
+                s.socTempMax = values.max() ?? 0
                 s.socTempAvg = sum / Double(values.count)
+                s.socTempMin = values.min() ?? 0
                 s.available = true
+
+                // HID 63 个测温点全部列出，但按温度排序后只把「热点前 8」
+                // 放进命名列表，避免下拉面板过长；详情窗口可见完整统计。
+                let sorted = temps.sorted { $0.celsius > $1.celsius }
+                for (i, t) in sorted.prefix(8).enumerated() {
+                    points.append(TempPoint(key: "HID-\(i)", label: t.name,
+                                            celsius: t.celsius,
+                                            group: "片上热点", source: "HID"))
+                }
             }
         }
+
+        s.tempPoints = points
         return s
     }
 }
